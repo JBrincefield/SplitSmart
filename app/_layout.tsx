@@ -15,11 +15,9 @@ function RootContent() {
     const inPublicGroup = segments[0] === "(public)";
 
     if (user && !inAuthGroup) {
-      // Redirect authenticated users to auth group
-      router.replace("/(auth)");
+      router.replace("/(auth)" as any);
     } else if (!user && !inPublicGroup) {
-      // Redirect unauthenticated users to public group
-      router.replace("/(public)");
+      router.replace("/(public)" as any);
     }
   }, [user, loading, segments]);
 

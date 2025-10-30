@@ -47,6 +47,12 @@ export default function AuthLayout() {
             ),
             }}
         />
+        <Tabs.Screen
+            name="groups/[id]"
+            options={{
+            href: null, // This hides it from the tab bar
+            }}
+        />
         </Tabs>
     );
 }

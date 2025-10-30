@@ -119,7 +119,7 @@ export default function GroupsScreen() {
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.groupCard}
-              onPress={() => router.push("/(auth)/groups")}
+            onPress={() => router.push({ pathname: "/groups/[id]", params: { id: item.id } })}
             activeOpacity={0.7}
           >
             <Text style={styles.groupName}>{item.name}</Text>
