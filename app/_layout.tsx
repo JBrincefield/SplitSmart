@@ -1,5 +1,43 @@
-import { Stack } from "expo-router";
+import { Slot, useRouter, useSegments } from "expo-router";
+import React, { useEffect } from "react";
+import { ActivityIndicator, View } from "react-native";
+import { AuthProvider, useAuth } from "../contexts/auth-context";
+
+function RootContent() {
+  const { user, loading } = useAuth();
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (loading) return;
+
+    const inAuthGroup = segments[0] === "(auth)";
+    const inPublicGroup = segments[0] === "(public)";
+
+    if (user && !inAuthGroup) {
+      // Redirect authenticated users to auth group
+      router.replace("/(auth)");
+    } else if (!user && !inPublicGroup) {
+      // Redirect unauthenticated users to public group
+      router.replace("/(public)");
+    }
+  }, [user, loading, segments]);
+
+  if (loading) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+        <ActivityIndicator size="large" color="#007bff" />
+      </View>
+    );
+  }
+
+  return <Slot />;
+}
 
 export default function RootLayout() {
-  return <Stack />;
+  return (
+    <AuthProvider>
+      <RootContent />
+    </AuthProvider>
+  );
 }

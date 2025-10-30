@@ -14,6 +14,7 @@ import {
 } from "firebase/firestore";
 import { auth, db } from "../firebaseConfig";
 
+
 /**
  * services/firebaseService
  *
@@ -191,6 +192,14 @@ export async function getUserGroups(userId: string) {
   }
 }
 
+// Get a specific group by ID
+export async function getGroupById(groupId: string) {
+  const ref = doc(db, "groups", groupId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...snap.data() };
+}
+
 /**
  * Add an expense to a group's `expenses` subcollection.
  *
@@ -266,3 +275,4 @@ export async function deleteExpense(groupId: string, expenseId: string) {
     throw error;
   }
 }
+
