@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { onAuthStateChanged, User } from "firebase/auth";
+import { signOut as firebaseSignOut, onAuthStateChanged, User } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { auth, db } from "../firebaseConfig";
@@ -9,6 +9,7 @@ type AuthContextType = {
     userData: any | null;
     loading: boolean;
     refreshUserData: () => Promise<void>;
+    signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType>({
@@ -16,6 +17,7 @@ const AuthContext = createContext<AuthContextType>({
     userData: null,
     loading: true,
     refreshUserData: async () => {},
+    signOut: async () => {},
 });
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
@@ -24,7 +26,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Listen for Firebase Auth state changes
         const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
         setUser(firebaseUser);
         if (firebaseUser) {
@@ -39,7 +40,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         return unsubscribe;
     }, []);
 
-    // Fetch extended user data from Firestore (groups, name, etc.)
     const fetchUserData = async (uid: string) => {
         const userDoc = await getDoc(doc(db, "users", uid));
         if (userDoc.exists()) setUserData(userDoc.data());
@@ -49,12 +49,22 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         if (user?.uid) await fetchUserData(user.uid);
     };
 
+    const signOut = async () => {
+        try {
+            await firebaseSignOut(auth);
+            await AsyncStorage.removeItem("user");
+            setUser(null);
+            setUserData(null);
+        } catch (e) {
+            console.error("Error signing out:", e);
+        }
+    };
+
     return (
-        <AuthContext.Provider value={{ user, userData, loading, refreshUserData }}>
+        <AuthContext.Provider value={{ user, userData, loading, refreshUserData, signOut }}>
         {children}
         </AuthContext.Provider>
     );
 };
 
-// Custom hook to access the context easily
 export const useAuth = () => useContext(AuthContext);

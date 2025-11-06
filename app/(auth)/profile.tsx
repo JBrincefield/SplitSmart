@@ -1,8 +1,13 @@
-import { useRouter } from "expo-router";
+/**
+ * Profile Screen
+ *
+ * Lets the signed-in user view and update basic profile information (name),
+ * see account metadata, and sign out. Writes to `users/{uid}` in Firestore and
+ * refreshes the in-app user cache on save.
+ */
 import { useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,51 +15,50 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useAuth } from "../../../contexts/auth-context";
-import { logoutUser } from "../../../services/firebaseService";
-import { SIZES, useGlobalStyles } from "../../../styles/global-styles";
+import { useAuth } from "../../contexts/auth-context";
+import { SIZES, useGlobalStyles } from "../../styles/global-styles";
 
 export default function ProfileScreen() {
-  const { user, userData, refreshUserData } = useAuth();
-  const router = useRouter();
+  // Auth context exposes current Firebase user, cached userData document,
+  // a refresh method, and a signOut action.
+  const { user, userData, refreshUserData, signOut } = useAuth();
   const styles = useGlobalStyles();
   const localStyles = useLocalStyles();
 
+  // Local form state and UI flags
   const [isEditing, setIsEditing] = useState(false);
   const [name, setName] = useState(userData?.name || "");
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [messageType, setMessageType] = useState<"success" | "error" | null>(null);
 
+  // Sign the user out of Firebase Auth
   const handleLogout = async () => {
-    Alert.alert(
-      "Sign Out",
-      "Are you sure you want to sign out?",
-      [
-        {
-          text: "Cancel",
-          style: "cancel",
-        },
-        {
-          text: "Sign Out",
-          style: "destructive",
-          onPress: async () => {
-            await logoutUser();
-            router.replace("/(public)");
-          },
-        },
-      ]
-    );
+    setIsLoggingOut(true);
+    setMessage(null);
+    try {
+      await signOut();
+    } catch {
+      setMessage("Failed to sign out. Please try again.");
+      setMessageType("error");
+    } finally {
+      setIsLoggingOut(false);
+    }
   };
 
+  // Persist name change to Firestore and refresh local cache
   const handleSave = async () => {
     if (!name.trim()) {
-      Alert.alert("Error", "Name cannot be empty");
+      setMessage("Name cannot be empty");
+      setMessageType("error");
       return;
     }
 
     setIsSaving(true);
     try {
       const { doc, updateDoc } = await import("firebase/firestore");
-      const { db } = await import("../../../firebaseConfig");
+      const { db } = await import("../../firebaseConfig");
       
       await updateDoc(doc(db, "users", user!.uid), {
         name: name.trim(),
@@ -62,20 +66,24 @@ export default function ProfileScreen() {
 
       await refreshUserData();
       setIsEditing(false);
-      Alert.alert("Success", "Profile updated successfully");
+      setMessage("Profile updated successfully");
+      setMessageType("success");
     } catch (error) {
       console.error("Error updating profile:", error);
-      Alert.alert("Error", "Failed to update profile. Please try again.");
+      setMessage("Failed to update profile. Please try again.");
+      setMessageType("error");
     } finally {
       setIsSaving(false);
     }
   };
 
+  // Revert edits to the last saved value
   const handleCancel = () => {
     setName(userData?.name || "");
     setIsEditing(false);
   };
 
+  // Human-readable date for "Member Since"
   const formatDate = (dateString?: string) => {
     if (!dateString) return "N/A";
     const date = new Date(dateString);
@@ -91,7 +99,20 @@ export default function ProfileScreen() {
       <View style={localStyles.container}>
         <Text style={styles.title}>Profile</Text>
 
-        {/* Profile Info Card */}
+        {message ? (
+          <View style={localStyles.messageBox}>
+            <Text
+              style={[
+                localStyles.messageText,
+                messageType === "success" ? localStyles.messageSuccess : undefined,
+                messageType === "error" ? localStyles.messageError : undefined,
+              ]}
+            >
+              {message}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={localStyles.card}>
           <View style={localStyles.infoSection}>
             <Text style={localStyles.infoLabel}>Name</Text>
@@ -102,7 +123,7 @@ export default function ProfileScreen() {
                 onChangeText={setName}
                 placeholder="Enter your name"
                 autoCapitalize="words"
-                editable={!isSaving}
+                editable={!isSaving && !isLoggingOut}
               />
             ) : (
               <Text style={localStyles.infoValue}>
@@ -137,14 +158,13 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Action Buttons */}
         <View style={localStyles.buttonContainer}>
           {isEditing ? (
             <>
               <TouchableOpacity
                 style={[styles.button, localStyles.saveButton]}
                 onPress={handleSave}
-                disabled={isSaving}
+                disabled={isSaving || isLoggingOut}
               >
                 {isSaving ? (
                   <ActivityIndicator color="#fff" />
@@ -155,7 +175,7 @@ export default function ProfileScreen() {
               <TouchableOpacity
                 style={[styles.button, localStyles.cancelButton]}
                 onPress={handleCancel}
-                disabled={isSaving}
+                disabled={isSaving || isLoggingOut}
               >
                 <Text style={[styles.buttonText, localStyles.cancelButtonText]}>
                   Cancel
@@ -167,14 +187,20 @@ export default function ProfileScreen() {
               <TouchableOpacity
                 style={[styles.button, localStyles.editButton]}
                 onPress={() => setIsEditing(true)}
+                disabled={isLoggingOut}
               >
                 <Text style={styles.buttonText}>Edit Profile</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.button, localStyles.logoutButton]}
                 onPress={handleLogout}
+                disabled={isLoggingOut}
               >
-                <Text style={styles.buttonText}>Sign Out</Text>
+                {isLoggingOut ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.buttonText}>Sign Out</Text>
+                )}
               </TouchableOpacity>
             </>
           )}
@@ -187,9 +213,23 @@ export default function ProfileScreen() {
 const useLocalStyles = () => {
   const globalStyles = useGlobalStyles();
 
+  // Styles scoped to this screen; uses tokens from global styles for theming
   return StyleSheet.create({
     container: {
       paddingVertical: SIZES.lg,
+    },
+    messageBox: {
+      marginBottom: SIZES.md,
+    },
+    messageText: {
+      fontSize: 14,
+      textAlign: "center",
+    },
+    messageSuccess: {
+      color: "#28a745",
+    },
+    messageError: {
+      color: "#dc3545",
     },
     card: {
       backgroundColor: globalStyles.input.backgroundColor,

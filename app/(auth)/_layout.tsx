@@ -1,3 +1,10 @@
+/**
+ * Authenticated app layout
+ *
+ * Defines the bottom tab navigation for signed-in users. The detail screens
+ * (e.g., group and expense detail routes) are part of this stack but hidden
+ * from the tab bar via `href: null`.
+ */
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import { useColorScheme } from "react-native";
@@ -10,6 +17,7 @@ export default function AuthLayout() {
     return (
         <Tabs
         screenOptions={{
+            // Use themed colors for the tab bar and hide headers (handled per screen)
             headerShown: false,
             tabBarStyle: { 
                 backgroundColor: isDark ? Colors.dark.background : Colors.light.background,
@@ -50,7 +58,15 @@ export default function AuthLayout() {
         <Tabs.Screen
             name="groups/[id]"
             options={{
-            href: null, // This hides it from the tab bar
+            // Hide details route from the tab bar; it still lives in the same navigator
+            href: null,
+            }}
+        />
+        <Tabs.Screen
+            name="expenses/[id]"
+            options={{
+            // Hide expense details route from the tab bar as well
+            href: null,
             }}
         />
         </Tabs>
