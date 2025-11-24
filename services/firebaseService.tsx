@@ -7,46 +7,23 @@ import {
   doc,
   DocumentReference,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   setDoc,
   updateDoc
 } from "firebase/firestore";
+import { ExpenseSplit } from "../components/model/expense";
 import { auth, db } from "../firebaseConfig";
 
 
-/**
- * services/firebaseService
- *
- * Convenience wrappers around Firebase Authentication and Firestore for
- * the SplitSmart app. Uses the modular Firebase SDK (v9+ style imports).
- *
- * Design notes:
- * - Groups and expenses store DocumentReference objects for users when
- *   possible (e.g. `createdBy` and `members`) to keep normalized relationships.
- * - Some fields may still be stored as plain strings (legacy). Consumers
- *   should handle both string ids and DocumentReference objects when reading.
- * - These functions intentionally return raw Firestore objects/ids so the
- *   calling UI layer can decide how to hydrate or cache referenced documents.
- */
+// Firebase service layer: wrappers for auth and Firestore operations.
+// Stores DocumentReferences when possible; handles legacy string IDs for backward compatibility.
 
-
-/**
- * Create a DocumentReference for a user.
- *
- * @param userId - Firebase Auth UID or users collection document id
- * @returns DocumentReference pointing to `users/{userId}`
- */
 export function userRef(userId: string) {
   return doc(db, "users", userId);
 }
 
-/**
- * Create a DocumentReference for a group.
- *
- * @param groupId - group document id
- * @returns DocumentReference pointing to `groups/{groupId}`
- */
 export function groupRef(groupId: string) {
   return doc(db, "groups", groupId);
 }
@@ -83,14 +60,7 @@ export async function registerUser(email: string, password: string, name: string
   }
 }
 
-/**
- * Sign in an existing user using email and password.
- *
- * @param email - user's email
- * @param password - user's password
- * @returns The Firebase User object on successful sign-in
- * @throws Propagates errors from Firebase Auth
- */
+
 export async function loginUser(email: string, password: string): Promise<any> {
   try {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
@@ -101,11 +71,7 @@ export async function loginUser(email: string, password: string): Promise<any> {
   }
 }
 
-/**
- * Sign out the currently authenticated user.
- *
- * Returns void. Errors from Firebase Auth are propagated after logging.
- */
+
 export async function logoutUser() {
   try {
     await signOut(auth);
@@ -115,36 +81,30 @@ export async function logoutUser() {
   }
 }
 
-/**
- * Create a new group document and add the group reference to each member's
- * `groups` array in their user document.
- *
- * Implementation details:
- * - `createdBy` and each entry in `members` are passed in as user ids (strings)
- *   and converted to DocumentReference objects before being written to Firestore.
- * - Each member's `users/{uid}.groups` array is updated with the new group DocumentReference
- *   via `arrayUnion` to avoid overwriting concurrent updates.
- *
- * @param name - name of the group
- * @param createdBy - uid of the user creating the group
- * @param members - array of user uids to include as members
- * @returns The id of the newly created group document
- * @throws Propagates Firestore errors
- */
+// Create a new group and link it to all members' user documents.
+// Owner gets all permissions; others default to limited access.
 export async function createGroup(name: string, createdBy: string, members: string[]) {
   try {
     const createdByRef = userRef(createdBy);
     const memberRefs = members.map((m) => userRef(m));
 
+    const nowIso = new Date().toISOString();
+    const memberPermissions: Record<string, { canCreateExpenses?: boolean; canInvite?: boolean; canKick?: boolean }> = {};
+    memberPermissions[createdBy] = { canCreateExpenses: true, canInvite: true, canKick: true };
+    for (const m of members) {
+      if (m === createdBy) continue;
+      memberPermissions[m] = { canCreateExpenses: true, canInvite: false, canKick: false };
+    }
+
     const groupDocumentRef = await addDoc(collection(db, "groups"), {
       name,
       createdBy: createdByRef,
       members: memberRefs,
-      activity: [`Group "${name}" created`],
-      createdAt: new Date().toISOString(),
+      memberPermissions,
+      activity: [{ text: `Group "${name}" created`, createdAt: nowIso }],
+      createdAt: nowIso,
     });
 
-    // Back-link this group on each member document using arrayUnion to avoid overwrites
     for (const userId of members) {
       const uRef = userRef(userId);
       const uSnap = await getDoc(uRef);
@@ -156,6 +116,35 @@ export async function createGroup(name: string, createdBy: string, members: stri
     return groupDocumentRef.id;
   } catch (error) {
     console.error("Error creating group:", error);
+    throw error;
+  }
+}
+
+/**
+ * Set or update permissions for a specific member within a group.
+ *
+ * Permissions:
+ * - canCreateExpenses: whether the member can create expenses in the group
+ * - canInvite: whether the member can invite/add others to the group
+ * - canKick: whether the member can remove other members
+ */
+export async function setMemberPermissions(
+  groupId: string,
+  userId: string,
+  permissions: { canCreateExpenses?: boolean; canInvite?: boolean; canKick?: boolean }
+) {
+  try {
+    const groupDocRef = groupRef(groupId);
+    const gSnap = await getDoc(groupDocRef);
+    if (!gSnap.exists()) throw new Error("Group not found");
+    const data = gSnap.data() as any;
+    const current: Record<string, any> = data.memberPermissions || {};
+    const prev = current[userId] || {};
+    const updated = { ...prev, ...permissions };
+    const newMap = { ...current, [userId]: updated };
+    await updateDoc(groupDocRef, { memberPermissions: newMap });
+  } catch (error) {
+    console.error("Error setting member permissions:", error);
     throw error;
   }
 }
@@ -183,7 +172,6 @@ export async function getUserGroups(userId: string) {
     const groups: any[] = [];
     for (const g of groupRefs) {
       if (!g) continue;
-      // Support both legacy string ids and DocumentReference entries
       const gRef = typeof g === "string" ? doc(db, "groups", g) : (g as DocumentReference);
       const groupDoc = await getDoc(gRef);
       if (groupDoc.exists()) groups.push({ id: groupDoc.id, ...(groupDoc.data() as any) });
@@ -195,25 +183,21 @@ export async function getUserGroups(userId: string) {
   }
 }
 
-// Get a specific group by ID
+// Fetch group by ID and resolve member references to user details
 export async function getGroupById(groupId: string) {
   const ref = doc(db, "groups", groupId);
   const snap = await getDoc(ref);
   if (!snap.exists()) return null;
   
   const groupData = snap.data();
-  
-  // Resolve member references to get user details
   const memberRefs = groupData.members || [];
   const resolvedMembers = await Promise.all(
     memberRefs.map(async (memberRef: any) => {
       try {
-        // If it's already a string (legacy format), return it
         if (typeof memberRef === 'string') {
           return { id: memberRef, name: memberRef };
         }
         
-        // If it's a DocumentReference, fetch the user data
         if (memberRef?.id) {
           const memberSnap = await getDoc(memberRef);
           if (memberSnap.exists()) {
@@ -234,7 +218,6 @@ export async function getGroupById(groupId: string) {
     })
   );
   
-  // Filter out any null values from failed resolutions
   const validMembers = resolvedMembers.filter(m => m !== null);
   
   return { 
@@ -260,11 +243,50 @@ export async function addGroupActivity(groupId: string, activityText: string) {
   try {
     const groupDocRef = doc(db, "groups", groupId);
     await updateDoc(groupDocRef, {
-      activity: arrayUnion(activityText)
+      activity: arrayUnion({ text: activityText, createdAt: new Date().toISOString() })
     });
   } catch (error) {
     console.error("Error adding group activity:", error);
     throw error;
+  }
+}
+
+/**
+ * Aggregate recent activity across all groups a user belongs to.
+ *
+ * Supports legacy activity entries that are simple strings by wrapping them
+ * in objects with a null createdAt (they will sort last relative to dated entries).
+ *
+ * @param userId - uid of the user
+ * @param limit - maximum number of activity entries to return (default 10)
+ * @returns Array of { groupId, groupName, text, createdAt } sorted descending by createdAt
+ */
+export async function getUserRecentActivity(userId: string, limit = 10) {
+  try {
+    const groups = await getUserGroups(userId);
+    const all: Array<{ groupId: string; groupName: string; text: string; createdAt: string | null }> = [];
+    for (const g of groups) {
+      const groupId = g.id;
+      const groupName = g.name || "Unnamed group";
+      const activityArray: any[] = Array.isArray(g.activity) ? g.activity : [];
+      for (const entry of activityArray) {
+        if (typeof entry === "string") {
+          all.push({ groupId, groupName, text: entry, createdAt: null });
+        } else if (entry && typeof entry === "object") {
+          all.push({ groupId, groupName, text: entry.text || "", createdAt: entry.createdAt || null });
+        }
+      }
+    }
+    all.sort((a, b) => {
+      if (!a.createdAt && !b.createdAt) return 0;
+      if (!a.createdAt) return 1;
+      if (!b.createdAt) return -1;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+    return all.slice(0, limit);
+  } catch (error) {
+    console.error("Error getting recent activity:", error);
+    return [];
   }
 }
 
@@ -285,11 +307,19 @@ export async function addGroupActivity(groupId: string, activityText: string) {
  * @returns The id of the created expense document
  * @throws Propagates Firestore errors
  */
-export async function addExpense(groupId: string, title: string, name: string, amount: number, paidBy: string, sharedWith: string[], notes = "") {
+export async function addExpense(
+  groupId: string,
+  title: string,
+  name: string,
+  amount: number,
+  paidBy: string,
+  sharedWith: string[],
+  notes = "",
+  split?: ExpenseSplit
+) {
   try {
     const paidByRef = userRef(paidBy);
     const sharedWithRefs = sharedWith.map((id) => userRef(id));
-    // Build participants status array from sharedWith only; if the payer is included, mark their portion as paid.
     const participants = sharedWithRefs.map((ref) => ({
       user: ref,
       status: ref.id === paidByRef.id ? "paid" : "unpaid",
@@ -303,19 +333,28 @@ export async function addExpense(groupId: string, title: string, name: string, a
       paidBy: paidByRef,
       sharedWith: sharedWithRefs,
       participants,
+      split: split ? normalizeSplitForWrite(split) : undefined,
       completed: false,
       notes,
       date: new Date().toISOString(),
     });
 
-    // Log activity
     await addGroupActivity(groupId, `New expense added: ${title} ($${amount.toFixed(2)})`);
-
     return expenseRef.id;
   } catch (error) {
     console.error("Error adding expense:", error);
     throw error;
   }
+}
+
+// Convert split allocations to use DocumentReferences for Firestore
+function normalizeSplitForWrite(split: ExpenseSplit): any {
+  const out: any = { type: split.type, allocations: [] as any[] };
+  for (const a of split.allocations || []) {
+    const user = typeof (a as any).user === "string" ? userRef((a as any).user) : (a as any).user;
+    out.allocations.push({ user, value: Number(a.value) || 0 });
+  }
+  return out;
 }
 
 /**
@@ -333,7 +372,6 @@ export async function addExpense(groupId: string, title: string, name: string, a
 export async function getGroupExpenses(groupId: string, onUpdate: (expenses: any[]) => void) {
   try {
     const q = query(collection(db, "groups", groupId, "expenses"));
-    // Return Firestore unsubscribe function so callers can detach listeners
     return onSnapshot(q, (snapshot) => {
       const expenses = snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as any) }));
       onUpdate(expenses);
@@ -363,12 +401,10 @@ export async function getExpenseById(groupId: string, expenseId: string) {
     
     const expenseData = expenseSnap.data() as any;
 
-    // Normalize date to ISO string regardless of storage type (Timestamp|string|number)
     let dateIso: string | null = null;
     const rawDate = expenseData.date;
     try {
       if (rawDate && typeof (rawDate as any).toDate === "function") {
-        // Firestore Timestamp
         dateIso = (rawDate as any).toDate().toISOString();
       } else if (typeof rawDate === "string") {
         dateIso = new Date(rawDate).toISOString();
@@ -379,11 +415,9 @@ export async function getExpenseById(groupId: string, expenseId: string) {
       dateIso = null;
     }
     
-    // Resolve paidBy reference
     let paidByUser = null;
     if (expenseData.paidBy) {
       try {
-        // If it's a DocumentReference, use it directly. If it's a string, create a ref.
         let ref;
         if (typeof expenseData.paidBy === "string") {
           ref = userRef(expenseData.paidBy);
@@ -440,7 +474,6 @@ export async function getExpenseById(groupId: string, expenseId: string) {
     let participantsResolved: any[] = [];
     const rawParticipants = expenseData.participants || null;
     if (rawParticipants && Array.isArray(rawParticipants)) {
-      // Resolve normalized participants array with user details
       participantsResolved = await Promise.all(
         rawParticipants.map(async (p: any) => {
           try {
@@ -472,7 +505,6 @@ export async function getExpenseById(groupId: string, expenseId: string) {
       );
       participantsResolved = participantsResolved.filter(Boolean) as any[];
     } else {
-      // Fallback: synthesize participants from sharedWith + paidBy (legacy data)
       const list: any[] = [];
       for (const u of sharedWithUsers) {
         if (!u) continue;
@@ -491,6 +523,7 @@ export async function getExpenseById(groupId: string, expenseId: string) {
       paidBy: paidByUser,
       sharedWith: sharedWithUsers.filter(u => u !== null),
       participants: participantsResolved,
+      split: expenseData.split || undefined,
       completed: !!expenseData.completed,
       completedAt: expenseData.completedAt || null,
     };
@@ -501,12 +534,7 @@ export async function getExpenseById(groupId: string, expenseId: string) {
   }
 }
 
-/**
- * Delete an expense document from a group's `expenses` subcollection.
- *
- * @param groupId - id of the group
- * @param expenseId - id of the expense to delete
- */
+
 export async function deleteExpense(groupId: string, expenseId: string) {
   try {
     const expenseDoc = await getDoc(doc(db, "groups", groupId, "expenses", expenseId));
@@ -534,7 +562,6 @@ export async function markPortionPaid(groupId: string, expenseId: string, userId
 
     let participants: any[] = Array.isArray(data.participants) ? [...data.participants] : [];
     if (participants.length === 0) {
-      // If no participants array yet (legacy), initialize it from sharedWith/paidBy
       const sharedWithRefs = (data.sharedWith || []).map((refLike: any) => {
         if (typeof refLike === "string") return userRef(refLike);
         return refLike;
@@ -630,12 +657,16 @@ export async function addMemberToGroup(groupId: string, userId: string) {
  * Note: Firestore doesn't have arrayRemove for DocumentReferences that works
  * reliably, so this function reads the current members, filters out the user,
  * and writes the updated array back. Also logs activity about the user leaving.
+ * 
+ * If the group becomes empty (no members remain), the group document and all its
+ * subcollections (expenses) are deleted.
  *
  * @param groupId - id of the group
  * @param userId - uid of the user to remove
+ * @returns true if the group was deleted (no members left), false otherwise
  * @throws Propagates Firestore errors
  */
-export async function removeMemberFromGroup(groupId: string, userId: string) {
+export async function removeMemberFromGroup(groupId: string, userId: string, removedByUserId?: string): Promise<boolean> {
   try {
     const groupDocRef = groupRef(groupId);
     const userDocRef = userRef(userId);
@@ -648,23 +679,54 @@ export async function removeMemberFromGroup(groupId: string, userId: string) {
     }
     
     const userName = (userSnap.data() as any).name || (userSnap.data() as any).email || "User";
+    let removedByName: string | null = null;
+    if (removedByUserId && removedByUserId !== userId) {
+      try {
+        const removedBySnap = await getDoc(userRef(removedByUserId));
+        removedByName = removedBySnap.exists()
+          ? ((removedBySnap.data() as any).name || (removedBySnap.data() as any).email || "User")
+          : null;
+      } catch {}
+    }
     const groupData = groupSnap.data();
     
     const updatedMembers = (groupData.members || []).filter((memberRef: any) => {
-      // memberRef is a DocumentReference; compare ids to remove target user
       return memberRef.id !== userId;
     });
     
     const userData = userSnap.data();
     const updatedGroups = (userData.groups || []).filter((gRef: any) => {
-      // Similarly remove this group from the user's `groups` array
       return gRef.id !== groupId;
     });
 
-    await updateDoc(groupDocRef, { members: updatedMembers });
     await updateDoc(userDocRef, { groups: updatedGroups });
     
-    await addGroupActivity(groupId, `${userName} left the group`);
+    if (updatedMembers.length === 0) {
+      const expensesQuery = query(collection(db, "groups", groupId, "expenses"));
+      const expensesSnap = await getDocs(expensesQuery);
+      const deleteExpensePromises = expensesSnap.docs.map((expenseDoc: any) => 
+        deleteDoc(expenseDoc.ref)
+      );
+      await Promise.all(deleteExpensePromises);
+      await deleteDoc(groupDocRef);
+      return true;
+    } else {
+      await updateDoc(groupDocRef, { members: updatedMembers });
+      
+      const memberPermissions = groupData.memberPermissions || {};
+      if (memberPermissions[userId]) {
+        const updatedPermissions = { ...memberPermissions };
+        delete updatedPermissions[userId];
+        await updateDoc(groupDocRef, { memberPermissions: updatedPermissions });
+      }
+      
+      if (removedByName) {
+        await addGroupActivity(groupId, `${userName} was removed by ${removedByName}`);
+      } else {
+        await addGroupActivity(groupId, `${userName} left the group`);
+      }
+      return false;
+    }
   } catch (error) {
     console.error("Error removing member from group:", error);
     throw error;

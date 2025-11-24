@@ -1,10 +1,5 @@
-/**
- * Expense Details Screen
- *
- * Shows a single expense within a group: status, payer, participants,
- * notes, and a per-person split. Allows users to mark their portion as paid
- * and the payer to mark the whole expense as complete once everyone is paid.
- */
+// Expense Details: shows status, payer, participants with computed per-person shares.
+// Users can mark their share paid; payer can complete the entire expense.
 import { Ionicons } from "@expo/vector-icons";
 import dayjs from "dayjs";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -14,23 +9,19 @@ import { Colors } from "../../../constants/theme";
 import { useAuth } from "../../../contexts/auth-context";
 import { getExpenseById, markExpenseComplete, markPortionPaid } from "../../../services/firebaseService";
 import { useGlobalStyles } from "../../../styles/global-styles";
+import { computeShares } from "../../../utils/split";
 
 export default function ExpenseDetails() {
-  // Dynamic params from the route: expense id and parent group id
   const { id, groupId } = useLocalSearchParams();
   const router = useRouter();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
-  // Expense document state and loading flags
   const [expense, setExpense] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const styles = useGlobalStyles();
   const { user } = useAuth();
 
-  // Derive participant list from normalized fields.
-  // Prefer `participants` if already resolved; otherwise synthesize from
-  // `sharedWith` + `paidBy` and assign paid/unpaid status.
   const participants = React.useMemo(() => {
     if (!expense) return [] as any[];
     if (Array.isArray(expense.participants) && expense.participants.length > 0) {
@@ -46,13 +37,10 @@ export default function ExpenseDetails() {
   useEffect(() => {
     if (!groupId || !id) return;
     
-    // Load latest expense snapshot from Firestore and resolve references
     (async () => {
       try {
         const data = await getExpenseById(groupId as string, id as string);
-        console.log("Expense data loaded:", data);
-        console.log("Participants:", data?.sharedWith, "PaidBy:", data?.paidBy);
-        setExpense(data);
+  setExpense(data);
       } catch (error) {
         console.error("Error loading expense:", error);
       } finally {
@@ -61,7 +49,6 @@ export default function ExpenseDetails() {
     })();
   }, [groupId, id]);
 
-  // Helper to refresh page state after a mutation
   const refresh = async () => {
     if (!groupId || !id) return;
     const data = await getExpenseById(groupId as string, id as string);
@@ -84,15 +71,13 @@ export default function ExpenseDetails() {
           <Text style={styles.buttonText}>Go Back</Text>
         </TouchableOpacity>
       </View>
-    );
+    )
   }
 
-  // Simple even split across participants (payer included)
-  const splitAmount = expense.amount / Math.max(participants.length || 1, 1);
-
-  console.log("Rendering expense:", expense.title);
-  console.log("Participants for rendering:", participants);
-  console.log(expense)
+  const shareMap: Record<string, number> = React.useMemo(() => {
+    const ids = participants.map((p: any) => p.id).filter(Boolean);
+    return computeShares(Number(expense.amount) || 0, ids, expense.split);
+  }, [participants, expense?.amount, expense?.split]);
 
   return (
     <ScrollView style={styles.screen}>
@@ -117,7 +102,6 @@ export default function ExpenseDetails() {
                 onPress={async () => {
                   try {
                     setActionLoading(true);
-                    // Mark the current user's share as paid
                     await markPortionPaid(groupId as string, id as string, user.uid);
                     await refresh();
                   } catch (e: any) {
@@ -141,7 +125,6 @@ export default function ExpenseDetails() {
                     if (!participants.every((p: any) => p.status === "paid")) {
                       const proceed = true;
                     }
-                    // Payer can mark the whole expense completed
                     await markExpenseComplete(groupId as string, id as string, user.uid);
                     await refresh();
                   } catch (e: any) {
@@ -207,13 +190,12 @@ export default function ExpenseDetails() {
                       <Text style={styles.paidBadgeText}>PAYER</Text>
                     </View>
                   )}
-                  {/* Paid status badge changes color if unpaid */}
                   <View style={[styles.paidBadge, { backgroundColor: p.status === "paid" ? styles.paidBadge.backgroundColor : "#adb5bd" }]}>
                     <Text style={styles.paidBadgeText}>{p.status === "paid" ? "PAID" : "UNPAID"}</Text>
                   </View>
                 </View>
               </View>
-              <Text style={styles.participantAmount}>${splitAmount.toFixed(2)}</Text>
+              <Text style={styles.participantAmount}>${(shareMap[p.id] ?? 0).toFixed(2)}</Text>
             </View>
           ))
         ) : (

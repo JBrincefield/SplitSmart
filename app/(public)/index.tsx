@@ -1,23 +1,24 @@
 import { useRouter } from "expo-router";
-import React from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { useGlobalStyles } from "../../styles/global-styles";
 
-export default function PublicHomeScreen() {
-  const router = useRouter();
+export default function PublicHome() {
   const styles = useGlobalStyles();
+  const router = useRouter();
 
   return (
     <View style={styles.screen}>
-      <Text style={styles.title}>Welcome To SplitSmart!</Text>
+      <Text style={styles.title}>SplitSmart</Text>
       <Text style={styles.subtitle}>
-        This is a Cost Sharing App. Please log in to continue.
+        Track shared expenses. Settle up fairly. Save the headache.
       </Text>
-      <TouchableOpacity style={styles.button} onPress={() => router.push("/(public)/login")}>
-        <Text style={styles.buttonText}>Log In</Text>
+
+      <TouchableOpacity style={styles.button} onPress={() => router.push("/(public)/signup")}>
+        <Text style={styles.buttonText}>Get Started</Text>
       </TouchableOpacity>
-      <TouchableOpacity onPress={() => router.push("/(public)/signup")}>
-        <Text style={styles.linkText}>Don't have an account? Sign up</Text>
+
+      <TouchableOpacity onPress={() => router.push("/(public)/login")}>
+        <Text style={styles.linkText}>Already have an account? Sign in</Text>
       </TouchableOpacity>
     </View>
   );
